@@ -5,6 +5,7 @@ on:
       - main # If your default branch is named something else, change this
 
 permissions:
+  id-token: write
   contents: write
   pages: write
 
@@ -16,7 +17,8 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        # uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           target: wasm32-unknown-unknown
@@ -28,7 +30,7 @@ jobs:
       - name: Prepare Deployment Directory
         run: |
           mkdir -p ./deploy
-          cp ./target/wasm32-unknown-unknown/release/hero.wasm ./deploy/
+          cp ./target/wasm32-unknown-unknown/release/*.wasm ./deploy/
           cp index.html ./deploy/
 
       - name: Deploy
