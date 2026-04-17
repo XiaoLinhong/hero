@@ -30,6 +30,7 @@ jobs:
       - name: Prepare Deployment Directory
         run: |
           mkdir -p ./deploy
+          cp -r assets/ ./deploy/
           cp ./target/wasm32-unknown-unknown/release/*.wasm ./deploy/
           cp index.html ./deploy/
           curl -L https://raw.githubusercontent.com/not-fl3/macroquad/master/js/mq_js_bundle.js -o deploy/mq_js_bundle.js

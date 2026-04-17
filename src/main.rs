@@ -1,7 +1,12 @@
 use std::fs;
 
 use macroquad::prelude::*;
-use macroquad_particles::{self as particles, ColorCurve, Emitter, EmitterConfig};
+use macroquad::audio::{PlaySoundParams, Sound, load_sound, play_sound, play_sound_once, set_sound_volume};
+
+use macroquad::experimental::animation::{AnimatedSprite, Animation};
+
+use macroquad_particles::{AtlasConfig, Emitter, EmitterConfig};
+// use macroquad_particles::{self as particles, ColorCurve, Emitter, EmitterConfig};
 
 const MOVEMENT_SPEED: f32 = 200.0;
 const FILE_NAME: &str = "best.txt";
@@ -59,28 +64,53 @@ struct GameWorld {
     mode: GameMode,
     score: usize,
     best_score: usize,
-    player: Shape,
+    ship: Shape,
     bullets: Vec<Shape>,
     enemies: Vec<Shape>,
     explosions: Vec<(Emitter, Vec2)>,
     direction_modifier: f32,
+    ship_texture: Texture2D,
+    bullet_texture: Texture2D,
+    explosion_texture: Texture2D,
+    enemy_small_texture: Texture2D,
+    enemy_medium_texture: Texture2D,
+    enemy_big_texture: Texture2D,
+    ship_sprite: AnimatedSprite,
+    bullet_sprite: AnimatedSprite,
+    enemy_small_sprite: AnimatedSprite,
+    enemy_medium_sprite: AnimatedSprite,
+    enemy_big_sprite: AnimatedSprite,
+    theme_music: Sound,
+    sound_laser: Sound,
+    sound_explosion: Sound,
 }
 
 impl GameWorld {
-    fn new() -> Self {
+    async fn new() -> Self {
         let best = fs::read_to_string(FILE_NAME)
             .map(|s| s.parse().unwrap())
             .unwrap_or(0);
+
+        let ship_texture = create_ship_texture().await;
+        let bullet_texture = create_bullet_texture().await;
+        let explosion_texture = load_texture("explosion.png").await.expect("Couldn't load file");
+        let enemy_small_texture = load_texture("enemy-small.png").await.expect("Couldn't load file");
+        let enemy_medium_texture = load_texture("enemy-medium.png").await.expect("Couldn't load file");
+        let enemy_big_texture = load_texture("enemy-big.png").await.expect("Couldn't load file");
+
+        let theme_music = load_sound("8bit-spaceshooter.ogg").await.unwrap();
+        let sound_laser = load_sound("laser.wav").await.unwrap();
+        let sound_explosion = load_sound("explosion.wav").await.unwrap();
 
         Self {
             mode: GameMode::MainMenu,
             score: 0,
             best_score: best,
-            player: Shape {
+            ship: Shape {
                 x: screen_width() / 2.0,
                 y: screen_height() / 2.0,
-                w: 32.0,
-                h: 32.0,
+                w: 16.0 * 2.0,
+                h: 24.0 * 2.0,
                 speed: MOVEMENT_SPEED,
                 alive: true,
             },
@@ -88,6 +118,20 @@ impl GameWorld {
             enemies: vec![],
             explosions: vec![],
             direction_modifier: 0.0,
+            ship_texture,
+            bullet_texture,
+            explosion_texture,
+            enemy_small_texture,
+            enemy_medium_texture,
+            enemy_big_texture,
+            theme_music,
+            sound_laser,
+            sound_explosion,
+            ship_sprite: create_ship_sprite(),
+            bullet_sprite: create_bullet_sprite(),
+            enemy_small_sprite : create_enemy_small_sprite (),
+            enemy_medium_sprite : create_enemy_medium_sprite (),
+            enemy_big_sprite : create_enemy_big_sprite (),
         }
     }
 
@@ -96,8 +140,8 @@ impl GameWorld {
         self.enemies.clear();
         self.bullets.clear();
         self.explosions.clear();
-        self.player.x = screen_width() / 2.0;
-        self.player.y = screen_height() / 2.0;
+        self.ship.x = screen_width() / 2.0;
+        self.ship.y = screen_height() / 2.0;
         self.mode = GameMode::Playing;
     }
 }
@@ -110,12 +154,19 @@ async fn main() {
     // let ctx = unsafe { get_internal_gl().quad_context };
     // println!("Renderer: {:?}", ctx.info());
 
-    rand::srand(miniquad::date::now() as u64);
-    let mut world = GameWorld::new();
+    set_pc_assets_folder("assets");
 
-    // 着色器相关
-    let render_target = render_target(320, 150);
-    render_target.texture.set_filter(FilterMode::Nearest);
+    let mut world = GameWorld::new().await;
+    build_textures_atlas();
+    // 把这些零散的小图，在程序启动阶段，自动拼接成一张巨大的“总图”
+
+    // // 着色器相关
+    // let render_target = render_target(320, 150); 
+    // // 开辟了一块缓冲区（Buffer），在这个 320x150 的小画布上画好所有东西。
+
+    // render_target.texture.set_filter(FilterMode::Nearest);
+    // // 把一个 320x150 的纹理拉伸到 1920x1080 的屏幕上时。
+
     let material: Material = load_material(
         ShaderSource::Glsl {
             vertex: VERTEX_SHADER,
@@ -131,23 +182,33 @@ async fn main() {
     )
     .unwrap();
 
+    rand::srand(miniquad::date::now() as u64);
+
+    let mut volume = 0.2;
+    play_sound(&world.theme_music,PlaySoundParams { looped: true, volume: volume,});
+
     loop {
+        volume += 0.001;
+        set_sound_volume(&world.theme_music, volume);
         clear_background(BLACK);
-        // 着色器相关
+        // 更新数据：每一帧物体的颜色、时间、光照位置都在变
         material.set_uniform("iResolution", (screen_width(), screen_height()));
         material.set_uniform("direction_modifier", world.direction_modifier);
+        // 激活材质：告诉 GPU “从现在开始，用这段 Shader 代码和这些参数来画画”
         gl_use_material(&material);
-        draw_texture_ex(
-            &render_target.texture,
-            0.,
-            0.,
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(screen_width(), screen_height())),
-                ..Default::default()
-            },
-        );
-        gl_use_default_material();
+        // 提交几何体：画出纹理。注意：此时画出的物体会受到上面激活的 Shader 影响
+        // draw_texture_ex(
+        //     &render_target.texture,
+        //     0.,
+        //     0.,
+        //     WHITE,
+        //     DrawTextureParams {
+        //         dest_size: Some(vec2(screen_width(), screen_height())),
+        //         ..Default::default()
+        //     },
+        // );
+        draw_rectangle(0., 0., screen_width(), screen_height(), WHITE);
+        gl_use_default_material(); // 
 
         match world.mode {
             GameMode::MainMenu => update_main_menu(&mut world),
@@ -181,17 +242,20 @@ fn update_playing(world: &mut GameWorld) {
     let dt = get_frame_time();
 
     // 1. 处理输入
-    handle_player_input(world, dt);
+    handle_ship_input(world, dt);
 
-    if is_key_pressed(KeyCode::A) && world.bullets.len() < 5 {
+    // if is_key_pressed(KeyCode::A) && world.bullets.len() < 5 {
+    if is_key_pressed(KeyCode::A) {
         world.bullets.push(Shape {
-            w: 4.0,
-            h: 10.0,
+            w: 32.0,
+            h: 32.0,
             speed: -100.0,
-            x: world.player.x,
-            y: world.player.y - world.player.h / 2.0,
+            x: world.ship.x,
+            y: world.ship.y - 24.0, // 从船头发射
+            // y: world.ship.y - world.ship.h / 2.0,
             alive: true,
         });
+        play_sound_once(&world.sound_laser);
     }
 
     if is_key_pressed(KeyCode::Escape) {
@@ -200,13 +264,23 @@ fn update_playing(world: &mut GameWorld) {
 
     // 2. 生成敌人
     if rand::gen_range(0, 99) >= 90 {
-        let size = rand::gen_range(16.0, 32.0);
+        // small: 17, 16;
+        // medium: 32, 16;
+        // big: 32, 32;
+        let w = rand::gen_range(16.0, 32.0);
+        let mut h = w*16./17.;
+        if w > 21.0 {
+            h = w/2.0
+        }
+        if w > 26.0 {
+            h = w/2.0
+        }
         world.enemies.push(Shape {
-            w: size,
-            h: size,
+            w,
+            h,
             speed: rand::gen_range(50.0, 150.0),
-            x: rand::gen_range(size / 2.0, screen_width() - size / 2.0),
-            y: -size,
+            x: rand::gen_range(w / 2.0, screen_width() - w / 2.0),
+            y: -w,
             alive: true,
         });
     }
@@ -218,6 +292,9 @@ fn update_playing(world: &mut GameWorld) {
     for bullet in &mut world.bullets {
         bullet.y += bullet.speed * dt;
     }
+    world.ship_sprite.update();
+    world.bullet_sprite.update();
+    world.enemy_small_sprite.update();
 
     // 4. 碰撞检测
     for bullet in &mut world.bullets {
@@ -230,10 +307,12 @@ fn update_playing(world: &mut GameWorld) {
                 world.explosions.push((
                     Emitter::new(EmitterConfig {
                         amount: enemy.w.round() as u32 * 2,
+                        texture: Some(world.explosion_texture.clone()),
                         ..particle_explosion()
                     }),
                     vec2(enemy.x, enemy.y),
                 ));
+                play_sound_once(&world.sound_explosion);
             }
         }
     }
@@ -243,7 +322,7 @@ fn update_playing(world: &mut GameWorld) {
         fs::write(FILE_NAME, world.best_score.to_string()).ok();
     }
 
-    if world.enemies.iter().any(|e| e.collides_with(&world.player)) {
+    if world.enemies.iter().any(|e| e.collides_with(&world.ship)) {
         world.mode = GameMode::GameOver;
     }
 
@@ -275,33 +354,85 @@ fn update_game_over(world: &mut GameWorld) {
     draw_centered_text("GAME OVER!", 50.0, RED);
 }
 
-fn handle_player_input(world: &mut GameWorld, dt: f32) {
+fn handle_ship_input(world: &mut GameWorld, dt: f32) {
+    world.ship_sprite.set_animation(0);
     if is_key_down(KeyCode::Right) { 
-        world.player.x += MOVEMENT_SPEED * dt;
+        world.ship.x += MOVEMENT_SPEED * dt;
         world.direction_modifier += 0.05 * dt;
+        world.ship_sprite.set_animation(2);
     }
-    if is_key_down(KeyCode::Left) { world.player.x -= MOVEMENT_SPEED * dt; }
-    if is_key_down(KeyCode::Down) { world.player.y += MOVEMENT_SPEED * dt; }
-    if is_key_down(KeyCode::Up) { world.player.y -= MOVEMENT_SPEED * dt; }
+    if is_key_down(KeyCode::Left) { 
+        world.ship.x -= MOVEMENT_SPEED * dt; 
+        world.direction_modifier -= 0.05 * dt;
+        world.ship_sprite.set_animation(1);
+    }
+    if is_key_down(KeyCode::Down) { world.ship.y += MOVEMENT_SPEED * dt; }
+    if is_key_down(KeyCode::Up) { world.ship.y -= MOVEMENT_SPEED * dt; }
 
-    world.player.x = clamp(world.player.x, 0.0, screen_width());
-    world.player.y = clamp(world.player.y, 0.0, screen_height());
+    world.ship.x = clamp(world.ship.x, 0.0, screen_width());
+    world.ship.y = clamp(world.ship.y, 0.0, screen_height());
 }
 
 fn draw_world_entities(world: &mut GameWorld) {
-    draw_circle(world.player.x, world.player.y, world.player.w / 2.0, YELLOW);
-    
-    for enemy in &world.enemies {
-        draw_rectangle(enemy.x - enemy.w / 2.0, enemy.y - enemy.h / 2.0, enemy.w, enemy.h, GREEN);
-    }
-    
+    // draw_circle(world.ship.x, world.ship.y, world.ship.w / 2.0, YELLOW);
+    let ship_frame  = world.ship_sprite.frame();
+    draw_texture_ex(
+        &world.ship_texture,
+        world.ship.x - world.ship.w/2.0,
+        world.ship.y - world.ship.h/2.0,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(world.ship.w, world.ship.h)),
+            source: Some(ship_frame.source_rect),
+            ..Default::default()
+        },
+    );
+
+    let bullet_frame  = world.bullet_sprite.frame();
     for bullet in &world.bullets {
-        draw_rectangle(bullet.x - bullet.w / 2.0, bullet.y - bullet.h / 2.0, bullet.w, bullet.h, BEIGE);
+        draw_texture_ex(
+            &world.bullet_texture,
+            bullet.x - bullet.w / 2.0,
+            bullet.y - bullet.h / 2.0,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(bullet.w, bullet.h)),
+                source: Some(bullet_frame.source_rect),
+                ..Default::default()
+            },
+        );
+        // draw_rectangle(bullet.x - bullet.w / 2.0, bullet.y - bullet.h / 2.0, bullet.w, bullet.h, BEIGE);
+    }
+
+    for enemy in &world.enemies {
+        let mut enemy_frame = world.enemy_small_sprite.frame();
+        let mut texture = &world.enemy_small_texture;
+        if enemy.w > 21.0 {
+            enemy_frame = world.enemy_medium_sprite.frame();
+            texture = &world.enemy_medium_texture;
+        }
+        if enemy.w > 26.0 {
+            enemy_frame = world.enemy_big_sprite.frame();
+            texture = &world.enemy_big_texture;
+        }
+        draw_texture_ex(
+            texture,
+            enemy.x - enemy.w / 2.0,
+            enemy.y - enemy.h / 2.0,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(enemy.w, enemy.h)),
+                source: Some(enemy_frame.source_rect),
+                ..Default::default()
+            },
+        );
+        // draw_rectangle(enemy.x - enemy.w / 2.0, enemy.y - enemy.h / 2.0, enemy.w, enemy.h, GREEN);
     }
 
     for (explosion, coords) in world.explosions.iter_mut() {
                     explosion.draw(*coords);
     }
+
 }
 
 fn draw_ui(world: &GameWorld) {
@@ -328,21 +459,134 @@ fn particle_explosion() -> EmitterConfig {
         local_coords: false,
         one_shot: true,
         emitting: true,
-        lifetime: 0.6,
-        lifetime_randomness: 0.3,
+        lifetime: 0.3,
+        lifetime_randomness: 0.2,
         explosiveness: 0.65,
         initial_direction_spread: 2.0 * std::f32::consts::PI,
-        initial_velocity: 300.0,
+        initial_velocity: 200.0,
         initial_velocity_randomness: 0.8,
-        size: 3.0,
+        size: 16.0,
         size_randomness: 0.3,
-        colors_curve: ColorCurve {
-            start: RED,
-            mid: ORANGE,
-            end: RED,
-        },
-        amount: 100,
-        emission_shape: particles::EmissionShape::Sphere { radius: 30. },
+        atlas: Some(AtlasConfig::new(5, 1, 0..)),
+        // amount: 1000,
+        // emission_shape: particles::EmissionShape::Sphere { radius: 30. },
         ..Default::default()
     }
+}
+
+fn create_enemy_small_sprite() -> AnimatedSprite {
+    // 34 * 16
+    let enemy_small_sprite = AnimatedSprite::new(
+        17,
+        16,
+        &[Animation {
+            name: "enemy_small".to_string(),
+            row: 0,
+            frames: 2,
+            fps: 12,
+        }],
+        true,
+    );
+    enemy_small_sprite
+}
+
+fn create_enemy_medium_sprite() -> AnimatedSprite {
+    // 64 * 16
+    let enemy_small_sprite = AnimatedSprite::new(
+        32,
+        16,
+        &[Animation {
+            name: "enemy_small".to_string(),
+            row: 0,
+            frames: 2,
+            fps: 12,
+        }],
+        true,
+    );
+    enemy_small_sprite
+}
+
+fn create_enemy_big_sprite() -> AnimatedSprite {
+    // 64 * 32
+    let enemy_small_sprite = AnimatedSprite::new(
+        32,
+        32,
+        &[Animation {
+            name: "enemy_small".to_string(),
+            row: 0,
+            frames: 2,
+            fps: 12,
+        }],
+        true,
+    );
+    enemy_small_sprite
+}
+
+fn create_bullet_sprite() -> AnimatedSprite {
+    // 32 * 32 
+    let mut bullet_sprite =AnimatedSprite::new(
+        16,
+        16,
+        &[
+            Animation {
+                name: "bullet".to_string(),
+                row: 0,
+                frames: 2,
+                fps: 12,
+            },
+            Animation {
+                name: "bolt".to_string(),
+                row: 1,
+                frames: 2,
+                fps: 12,
+            },
+        ],
+        true,
+    );
+    bullet_sprite.set_animation(1);
+    bullet_sprite
+}
+
+fn create_ship_sprite() -> AnimatedSprite {
+    let ship_sprite = AnimatedSprite::new(
+        16,  // 
+        24, // 会在texture中导航用到
+        &[
+            Animation {
+                name: "idle".to_string(),
+                row: 0,
+                frames: 2,
+                fps: 12,
+            },
+            Animation {
+                name: "left".to_string(),
+                row: 2,
+                frames: 2,
+                fps: 12,
+            },
+            Animation {
+                name: "right".to_string(),
+                row: 4,
+                frames: 2,
+                fps: 12,
+            },
+        ],
+        true,
+    );
+    ship_sprite
+}
+
+async fn create_ship_texture() -> Texture2D {
+    // 32 * 120 像素, 分辨率 72 dpi, 每个飞船 16*30
+    let ship_texture: Texture2D = load_texture("ship.png").await.expect("Couldn't load file");
+    ship_texture.set_filter(FilterMode::Nearest);
+    ship_texture
+}
+
+async fn create_bullet_texture() -> Texture2D {
+    let bullet_texture = load_texture("laser-bolts.png")
+        .await
+        .expect("Couldn't load file");
+    bullet_texture.set_filter(FilterMode::Nearest);
+    bullet_texture
 }
