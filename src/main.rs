@@ -1,9 +1,10 @@
 use std::fs;
 
 use macroquad::prelude::*;
-use macroquad::audio::{PlaySoundParams, Sound, load_sound, play_sound, play_sound_once, set_sound_volume};
-
+use macroquad::ui::{hash, root_ui, Skin};
 use macroquad::experimental::animation::{AnimatedSprite, Animation};
+
+use macroquad::audio::{PlaySoundParams, Sound, load_sound, play_sound, play_sound_once, set_sound_volume};
 
 use macroquad_particles::{AtlasConfig, Emitter, EmitterConfig};
 // use macroquad_particles::{self as particles, ColorCurve, Emitter, EmitterConfig};
@@ -83,6 +84,10 @@ struct GameWorld {
     theme_music: Sound,
     sound_laser: Sound,
     sound_explosion: Sound,
+    window_background: Image,
+    button_background: Image,
+    button_clicked_background: Image,
+    font: Vec<u8>,
 }
 
 impl GameWorld {
@@ -102,6 +107,11 @@ impl GameWorld {
         let sound_laser = load_sound("laser.wav").await.unwrap();
         let sound_explosion = load_sound("explosion.wav").await.unwrap();
 
+        let window_background = load_image("window_background.png").await.unwrap();
+        let button_background = load_image("button_background.png").await.unwrap();
+        let button_clicked_background = load_image("button_clicked_background.png").await.unwrap();
+        let font = load_file("atari_games.ttf").await.unwrap();
+
         Self {
             mode: GameMode::MainMenu,
             score: 0,
@@ -118,6 +128,10 @@ impl GameWorld {
             enemies: vec![],
             explosions: vec![],
             direction_modifier: 0.0,
+            window_background,
+            button_background,
+            button_clicked_background,
+            font,
             ship_texture,
             bullet_texture,
             explosion_texture,
@@ -167,6 +181,42 @@ async fn main() {
     // render_target.texture.set_filter(FilterMode::Nearest);
     // // 把一个 320x150 的纹理拉伸到 1920x1080 的屏幕上时。
 
+    let window_style = root_ui()
+        .style_builder()
+        .background(world.window_background.clone()) // 376 * 312
+        .background_margin(RectOffset::new(32.0, 76.0, 44.0, 20.0))
+        .margin(RectOffset::new(0.0, -40.0, 0.0, 0.0))
+        .build();
+
+    let button_style = root_ui()
+        .style_builder()
+        .background(world.button_background.clone()) // 36* 36
+        .background_clicked(world.button_clicked_background.clone()) // 36*36
+        .background_margin(RectOffset::new(16.0, 16.0, 16.0, 16.0))
+        .margin(RectOffset::new(16.0, 0.0, -8.0, -8.0))
+        .font(&world.font)
+        .unwrap()
+        .text_color(WHITE)
+        .font_size(64)
+        .build();
+
+    let label_style = root_ui()
+        .style_builder()
+        .font(&world.font)
+        .unwrap()
+        .text_color(WHITE)
+        .font_size(28)
+        .build();
+
+    let ui_skin = Skin {
+        window_style,
+        button_style,
+        label_style,
+        ..root_ui().default_skin()
+    };
+    root_ui().push_skin(&ui_skin);
+    let window_size = vec2(370.0, 320.0);
+
     let material: Material = load_material(
         ShaderSource::Glsl {
             vertex: VERTEX_SHADER,
@@ -189,6 +239,7 @@ async fn main() {
 
     loop {
         volume += 0.001;
+        volume = volume.min(0.5);
         set_sound_volume(&world.theme_music, volume);
         clear_background(BLACK);
         // 更新数据：每一帧物体的颜色、时间、光照位置都在变
@@ -211,7 +262,7 @@ async fn main() {
         gl_use_default_material(); // 
 
         match world.mode {
-            GameMode::MainMenu => update_main_menu(&mut world),
+            GameMode::MainMenu => update_main_menu(&mut world, &window_size),
             GameMode::Playing => update_playing(&mut world),
             GameMode::Paused => update_paused(&mut world),
             GameMode::GameOver => update_game_over(&mut world),
@@ -225,17 +276,35 @@ async fn main() {
 
 // --- 子状态处理函数 ---
 
-fn update_main_menu(world: &mut GameWorld) {
-    if is_key_pressed(KeyCode::Escape) {
-        std::process::exit(0);
-    }
-    if is_key_pressed(KeyCode::Space) {
-        world.reset();
-    }
+fn update_main_menu(world: &mut GameWorld, window_size: &Vec2) {
+    // if is_key_pressed(KeyCode::Escape) {
+    //     std::process::exit(0);
+    // }
+    // if is_key_pressed(KeyCode::Space) {
+    //     world.reset();
+    // }
+
+    root_ui().window(
+        hash!(),
+        vec2(
+            screen_width() / 2.0 - window_size.x / 2.0,
+            screen_height() / 2.0 - window_size.y / 2.0,
+        ),
+        window_size.clone(),
+        |ui| {
+            ui.label(vec2(80.0, -34.0), "Main Menu");
+            if ui.button(vec2(65.0, 25.0), "Play") {
+                world.reset()
+            }
+            if ui.button(vec2(65.0, 125.0), "Quit") {
+                std::process::exit(0);
+            }
+        },
+    );
 
     draw_text(&format!("score: {}", get_fps()), 20.0, 20.0, 30.0, WHITE);
 
-    draw_centered_text("Press Space to start game!", 50.0, RED);
+    // draw_centered_text("Press Space to start game!", 50.0, RED);
 }
 
 fn update_playing(world: &mut GameWorld) {
