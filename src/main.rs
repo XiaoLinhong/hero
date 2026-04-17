@@ -3,6 +3,8 @@ use std::fs;
 use macroquad::prelude::*;
 use macroquad::ui::{hash, root_ui, Skin};
 use macroquad::experimental::animation::{AnimatedSprite, Animation};
+use macroquad::experimental::collections::storage;
+use macroquad::experimental::coroutines::start_coroutine;
 
 use macroquad::audio::{PlaySoundParams, Sound, load_sound, play_sound, play_sound_once, set_sound_volume};
 
@@ -61,26 +63,13 @@ enum GameMode {
     GameOver,
 }
 
-struct GameWorld {
-    mode: GameMode,
-    score: usize,
-    best_score: usize,
-    ship: Shape,
-    bullets: Vec<Shape>,
-    enemies: Vec<Shape>,
-    explosions: Vec<(Emitter, Vec2)>,
-    direction_modifier: f32,
+struct Resources {
     ship_texture: Texture2D,
     bullet_texture: Texture2D,
     explosion_texture: Texture2D,
     enemy_small_texture: Texture2D,
     enemy_medium_texture: Texture2D,
     enemy_big_texture: Texture2D,
-    ship_sprite: AnimatedSprite,
-    bullet_sprite: AnimatedSprite,
-    enemy_small_sprite: AnimatedSprite,
-    enemy_medium_sprite: AnimatedSprite,
-    enemy_big_sprite: AnimatedSprite,
     theme_music: Sound,
     sound_laser: Sound,
     sound_explosion: Sound,
@@ -90,29 +79,87 @@ struct GameWorld {
     font: Vec<u8>,
 }
 
+impl Resources {
+    async fn new() -> Result<Self, macroquad::Error> {
+        let ship_texture: Texture2D = load_texture("ship.png").await?;
+        ship_texture.set_filter(FilterMode::Nearest);
+        let bullet_texture = load_texture("laser-bolts.png")
+        .await?;
+        bullet_texture.set_filter(FilterMode::Nearest);
+    
+        let explosion_texture = load_texture("explosion.png").await?;
+        let enemy_small_texture = load_texture("enemy-small.png").await?;
+        let enemy_medium_texture = load_texture("enemy-medium.png").await?;
+        let enemy_big_texture = load_texture("enemy-big.png").await?;
+
+        let theme_music = load_sound("8bit-spaceshooter.ogg").await?;
+        let sound_laser = load_sound("laser.wav").await?;
+        let sound_explosion = load_sound("explosion.wav").await?;
+
+        let window_background = load_image("window_background.png").await?;
+        let button_background = load_image("button_background.png").await?;
+        let button_clicked_background = load_image("button_clicked_background.png").await?;
+        let font = load_file("atari_games.ttf").await?;
+
+        Ok(Self {ship_texture, bullet_texture, explosion_texture, 
+                enemy_small_texture, enemy_medium_texture, enemy_big_texture, 
+                theme_music, sound_laser, sound_explosion, window_background, 
+                button_background, button_clicked_background, font })
+    }
+
+    #[allow(unused)]
+    pub async fn load() -> Result<(), macroquad::Error> {
+        let resources_loading = start_coroutine(async move {
+            let resources = Resources::new().await.unwrap();
+            storage::store(resources);
+        });
+
+        while !resources_loading.is_done() {
+            clear_background(BLACK);
+            let text = format!(
+                "Loading resources {}",
+                ".".repeat(((get_time() * 2.) as usize) % 4)
+            );
+            draw_text(
+                &text,
+                screen_width() / 2. - 160.,
+                screen_height() / 2.,
+                40.,
+                WHITE,
+            );
+            next_frame().await;
+        }
+
+        Ok(())
+    }
+}
+
+
+
+struct GameWorld<>{
+    mode: GameMode,
+    score: usize,
+    best_score: usize,
+    ship: Shape,
+    bullets: Vec<Shape>,
+    enemies: Vec<Shape>,
+    explosions: Vec<(Emitter, Vec2)>,
+    direction_modifier: f32,
+    ship_sprite: AnimatedSprite,
+    bullet_sprite: AnimatedSprite,
+    enemy_small_sprite: AnimatedSprite,
+    enemy_medium_sprite: AnimatedSprite,
+    enemy_big_sprite: AnimatedSprite,
+    // resources: Resources,
+}
+
 impl GameWorld {
-    async fn new() -> Self {
+    async fn new() -> Result<Self, macroquad::Error> {
         let best = fs::read_to_string(FILE_NAME)
             .map(|s| s.parse().unwrap())
             .unwrap_or(0);
 
-        let ship_texture = create_ship_texture().await;
-        let bullet_texture = create_bullet_texture().await;
-        let explosion_texture = load_texture("explosion.png").await.expect("Couldn't load file");
-        let enemy_small_texture = load_texture("enemy-small.png").await.expect("Couldn't load file");
-        let enemy_medium_texture = load_texture("enemy-medium.png").await.expect("Couldn't load file");
-        let enemy_big_texture = load_texture("enemy-big.png").await.expect("Couldn't load file");
-
-        let theme_music = load_sound("8bit-spaceshooter.ogg").await.unwrap();
-        let sound_laser = load_sound("laser.wav").await.unwrap();
-        let sound_explosion = load_sound("explosion.wav").await.unwrap();
-
-        let window_background = load_image("window_background.png").await.unwrap();
-        let button_background = load_image("button_background.png").await.unwrap();
-        let button_clicked_background = load_image("button_clicked_background.png").await.unwrap();
-        let font = load_file("atari_games.ttf").await.unwrap();
-
-        Self {
+        Ok(Self {
             mode: GameMode::MainMenu,
             score: 0,
             best_score: best,
@@ -128,25 +175,12 @@ impl GameWorld {
             enemies: vec![],
             explosions: vec![],
             direction_modifier: 0.0,
-            window_background,
-            button_background,
-            button_clicked_background,
-            font,
-            ship_texture,
-            bullet_texture,
-            explosion_texture,
-            enemy_small_texture,
-            enemy_medium_texture,
-            enemy_big_texture,
-            theme_music,
-            sound_laser,
-            sound_explosion,
             ship_sprite: create_ship_sprite(),
             bullet_sprite: create_bullet_sprite(),
             enemy_small_sprite : create_enemy_small_sprite (),
             enemy_medium_sprite : create_enemy_medium_sprite (),
             enemy_big_sprite : create_enemy_big_sprite (),
-        }
+        })
     }
 
     fn reset(&mut self) {
@@ -163,14 +197,16 @@ impl GameWorld {
 // --- 核心逻辑 ---
 
 #[macroquad::main("Hero")]
-async fn main() {
+async fn main() -> Result<(), macroquad::Error> {
     // 初始化渲染器信息
     // let ctx = unsafe { get_internal_gl().quad_context };
     // println!("Renderer: {:?}", ctx.info());
 
     set_pc_assets_folder("assets");
 
-    let mut world = GameWorld::new().await;
+    let mut world = GameWorld::new().await?;
+    Resources::load().await?;
+    let resources = storage::get::<Resources>();
     build_textures_atlas();
     // 把这些零散的小图，在程序启动阶段，自动拼接成一张巨大的“总图”
 
@@ -183,18 +219,18 @@ async fn main() {
 
     let window_style = root_ui()
         .style_builder()
-        .background(world.window_background.clone()) // 376 * 312
+        .background(resources.window_background.clone()) // 376 * 312
         .background_margin(RectOffset::new(32.0, 76.0, 44.0, 20.0))
         .margin(RectOffset::new(0.0, -40.0, 0.0, 0.0))
         .build();
 
     let button_style = root_ui()
         .style_builder()
-        .background(world.button_background.clone()) // 36* 36
-        .background_clicked(world.button_clicked_background.clone()) // 36*36
+        .background(resources.button_background.clone()) // 36* 36
+        .background_clicked(resources.button_clicked_background.clone()) // 36*36
         .background_margin(RectOffset::new(16.0, 16.0, 16.0, 16.0))
         .margin(RectOffset::new(16.0, 0.0, -8.0, -8.0))
-        .font(&world.font)
+        .font(&resources.font)
         .unwrap()
         .text_color(WHITE)
         .font_size(64)
@@ -202,7 +238,7 @@ async fn main() {
 
     let label_style = root_ui()
         .style_builder()
-        .font(&world.font)
+        .font(&resources.font)
         .unwrap()
         .text_color(WHITE)
         .font_size(28)
@@ -235,12 +271,12 @@ async fn main() {
     rand::srand(miniquad::date::now() as u64);
 
     let mut volume = 0.2;
-    play_sound(&world.theme_music,PlaySoundParams { looped: true, volume: volume,});
+    play_sound(&resources.theme_music,PlaySoundParams { looped: true, volume: volume,});
 
     loop {
         volume += 0.001;
         volume = volume.min(0.5);
-        set_sound_volume(&world.theme_music, volume);
+        set_sound_volume(&resources.theme_music, volume);
         clear_background(BLACK);
         // 更新数据：每一帧物体的颜色、时间、光照位置都在变
         material.set_uniform("iResolution", (screen_width(), screen_height()));
@@ -310,6 +346,8 @@ fn update_main_menu(world: &mut GameWorld, window_size: &Vec2) {
 fn update_playing(world: &mut GameWorld) {
     let dt = get_frame_time();
 
+    let resources = storage::get::<Resources>();
+
     // 1. 处理输入
     handle_ship_input(world, dt);
 
@@ -324,7 +362,7 @@ fn update_playing(world: &mut GameWorld) {
             // y: world.ship.y - world.ship.h / 2.0,
             alive: true,
         });
-        play_sound_once(&world.sound_laser);
+        play_sound_once(&resources.sound_laser);
     }
 
     if is_key_pressed(KeyCode::Escape) {
@@ -376,12 +414,12 @@ fn update_playing(world: &mut GameWorld) {
                 world.explosions.push((
                     Emitter::new(EmitterConfig {
                         amount: enemy.w.round() as u32 * 2,
-                        texture: Some(world.explosion_texture.clone()),
+                        texture: Some(resources.explosion_texture.clone()),
                         ..particle_explosion()
                     }),
                     vec2(enemy.x, enemy.y),
                 ));
-                play_sound_once(&world.sound_explosion);
+                play_sound_once(&resources.sound_explosion);
             }
         }
     }
@@ -404,6 +442,7 @@ fn update_playing(world: &mut GameWorld) {
 }
 
 fn update_paused(world: &mut GameWorld) {
+
     if is_key_pressed(KeyCode::Space) {
         world.mode = GameMode::Playing;
     }
@@ -443,10 +482,11 @@ fn handle_ship_input(world: &mut GameWorld, dt: f32) {
 }
 
 fn draw_world_entities(world: &mut GameWorld) {
+    let resources = storage::get::<Resources>();
     // draw_circle(world.ship.x, world.ship.y, world.ship.w / 2.0, YELLOW);
     let ship_frame  = world.ship_sprite.frame();
     draw_texture_ex(
-        &world.ship_texture,
+        &resources.ship_texture,
         world.ship.x - world.ship.w/2.0,
         world.ship.y - world.ship.h/2.0,
         WHITE,
@@ -460,7 +500,7 @@ fn draw_world_entities(world: &mut GameWorld) {
     let bullet_frame  = world.bullet_sprite.frame();
     for bullet in &world.bullets {
         draw_texture_ex(
-            &world.bullet_texture,
+            &resources.bullet_texture,
             bullet.x - bullet.w / 2.0,
             bullet.y - bullet.h / 2.0,
             WHITE,
@@ -475,14 +515,14 @@ fn draw_world_entities(world: &mut GameWorld) {
 
     for enemy in &world.enemies {
         let mut enemy_frame = world.enemy_small_sprite.frame();
-        let mut texture = &world.enemy_small_texture;
+        let mut texture = &resources.enemy_small_texture;
         if enemy.w > 21.0 {
             enemy_frame = world.enemy_medium_sprite.frame();
-            texture = &world.enemy_medium_texture;
+            texture = &resources.enemy_medium_texture;
         }
         if enemy.w > 26.0 {
             enemy_frame = world.enemy_big_sprite.frame();
-            texture = &world.enemy_big_texture;
+            texture = &resources.enemy_big_texture;
         }
         draw_texture_ex(
             texture,
@@ -643,19 +683,4 @@ fn create_ship_sprite() -> AnimatedSprite {
         true,
     );
     ship_sprite
-}
-
-async fn create_ship_texture() -> Texture2D {
-    // 32 * 120 像素, 分辨率 72 dpi, 每个飞船 16*30
-    let ship_texture: Texture2D = load_texture("ship.png").await.expect("Couldn't load file");
-    ship_texture.set_filter(FilterMode::Nearest);
-    ship_texture
-}
-
-async fn create_bullet_texture() -> Texture2D {
-    let bullet_texture = load_texture("laser-bolts.png")
-        .await
-        .expect("Couldn't load file");
-    bullet_texture.set_filter(FilterMode::Nearest);
-    bullet_texture
 }
